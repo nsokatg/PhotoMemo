@@ -73,6 +73,19 @@
       border-color: #005999;
     }
 
+    /* モード切替ボタンのアクティブ状態 */
+    button.btn-mode.active-pen {
+      background-color: #ff3b30;
+      border-color: #cc2f26;
+      color: #fff;
+    }
+
+    button.btn-mode.active-move {
+      background-color: #34c759;
+      border-color: #289c45;
+      color: #fff;
+    }
+
     button:disabled, label.disabled {
       opacity: 0.4;
       cursor: not-allowed;
@@ -89,8 +102,8 @@
     }
 
     .color-btn {
-      width: 26px;
-      height: 26px;
+      width: 24px;
+      height: 24px;
       border-radius: 50%;
       border: 2px solid transparent;
       cursor: pointer;
@@ -109,7 +122,7 @@
       overflow: hidden;
     }
 
-    /* ビューワーエリア（拡大スクロール可能領域） */
+    /* ビューワーエリア */
     .viewer-area {
       flex: 1;
       position: relative;
@@ -117,15 +130,19 @@
       align-items: center;
       justify-content: center;
       background-color: #121216;
-      overflow: auto; /* 拡大時のスクロールを許可 */
+      overflow: auto;
       -webkit-overflow-scrolling: touch;
-      touch-action: pan-x pan-y pinch-zoom; /* ブラウザ標準の拡大・移動を許可 */
+      touch-action: pan-x pan-y pinch-zoom; /* デフォルトはスクロール・拡大許可 */
+    }
+
+    /* ペンモードのときはビューワー自体のスクロールを一時的にロックして書きやすくする */
+    .viewer-area.pen-mode {
+      touch-action: none;
     }
 
     .canvas-container {
       position: relative;
       box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-      transform-origin: center center;
     }
 
     canvas {
@@ -136,8 +153,13 @@
       position: absolute;
       top: 0;
       left: 0;
+      pointer-events: none; /* デフォルト（移動モード）ではタッチをスルーさせる */
+    }
+
+    /* ペンモード有効時はキャンバスでタッチを受け付ける */
+    .viewer-area.pen-active #drawCanvas {
+      pointer-events: auto;
       cursor: crosshair;
-      touch-action: none; /* キャンバス上では1本指描画を処理 */
     }
 
     /* サムネイル一覧 */
@@ -228,18 +250,20 @@
     </div>
 
     <div class="group">
-      <div class="color-picker">
+      <!-- モード切替ボタン -->
+      <button class="btn btn-mode active-move" id="modeBtn" type="button">✋ 移動モード</button>
+
+      <div class="color-picker" id="penToolGroup" style="opacity: 0.5; pointer-events: none;">
         <div class="color-btn active" style="background:#ff3b30;" data-color="#ff3b30"></div>
         <div class="color-btn" style="background:#007aff;" data-color="#007aff"></div>
         <div class="color-btn" style="background:#ffcc00;" data-color="#ffcc00"></div>
         <div class="color-btn" style="background:#34c759;" data-color="#34c759"></div>
         <div class="color-btn" style="background:#ffffff;" data-color="#ffffff"></div>
+        <input type="range" id="lineWidth" min="2" max="20" value="4" style="width:50px;">
       </div>
 
-      <input type="range" id="lineWidth" min="2" max="20" value="4" style="width:60px;">
-
-      <button class="btn" id="undoBtn" type="button">↩</button>
-      <button class="btn" id="clearBtn" type="button">🗑</button>
+      <button class="btn" id="undoBtn" type="button" disabled>↩</button>
+      <button class="btn" id="clearBtn" type="button" disabled>🗑</button>
     </div>
 
     <div class="group">
@@ -249,10 +273,8 @@
 
   <!-- メインエリア -->
   <div class="main-container">
-    <!-- サムネイル一覧 -->
     <div class="sidebar" id="thumbnailList"></div>
 
-    <!-- 中央ビューワー -->
     <div class="viewer-area" id="viewerArea">
       <div class="empty-state" id="emptyState">
         <svg width="50" height="50" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
@@ -280,6 +302,7 @@
     let strokes = [];
     let currentStroke = null;
     let isDrawing = false;
+    let isPenMode = false; // false = 移動・スクロールモード, true = ペン（手書き）モード
 
     const fileInput = document.getElementById('fileInput');
     const thumbnailList = document.getElementById('thumbnailList');
@@ -293,12 +316,34 @@
     const prevBtn = document.getElementById('prevBtn');
     const nextBtn = document.getElementById('nextBtn');
     const saveBtn = document.getElementById('saveBtn');
+    const modeBtn = document.getElementById('modeBtn');
+    const penToolGroup = document.getElementById('penToolGroup');
     const emptyState = document.getElementById('emptyState');
     const undoBtn = document.getElementById('undoBtn');
     const clearBtn = document.getElementById('clearBtn');
     const lineWidthInput = document.getElementById('lineWidth');
 
-    // 写真選択
+    // モード切替ボタンの処理
+    modeBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (currentIndex === -1) return;
+      isPenMode = !isPenMode;
+
+      if (isPenMode) {
+        modeBtn.textContent = '✏️ ペンモード';
+        modeBtn.className = 'btn btn-mode active-pen';
+        viewerArea.classList.add('pen-active', 'pen-mode');
+        penToolGroup.style.opacity = '1';
+        penToolGroup.style.pointerEvents = 'auto';
+      } else {
+        modeBtn.textContent = '✋ 移動モード';
+        modeBtn.className = 'btn btn-mode active-move';
+        viewerArea.classList.remove('pen-active', 'pen-mode');
+        penToolGroup.style.opacity = '0.5';
+        penToolGroup.style.pointerEvents = 'none';
+      }
+    });
+
     fileInput.addEventListener('change', (e) => {
       const files = Array.from(e.target.files);
       if (files.length === 0) return;
@@ -394,13 +439,11 @@
       });
     }
 
-    // 拡大表示にも追従する確実な座標取得
     function getPos(e) {
       const rect = drawCanvas.getBoundingClientRect();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
       const clientY = e.touches ? e.touches[0].clientY : e.clientY;
 
-      // 拡大率に対応した倍率補正
       const scaleX = drawCanvas.width / rect.width;
       const scaleY = drawCanvas.height / rect.height;
 
@@ -410,21 +453,9 @@
       };
     }
 
-    // --- 描画＆ピンチ操作の切り分け ---
+    // 描画イベント（ペンモードが有効なときのみ動作）
     function startDrawing(e) {
-      if (currentIndex === -1) return;
-
-      // 2本指以上の操作はピンチズーム（拡大・移動）に委ねる
-      if (e.touches && e.touches.length > 1) {
-        if (isDrawing) {
-          strokes.pop(); // ズーム開始前の最初の点を取り除く
-          isDrawing = false;
-          currentStroke = null;
-          redrawAll();
-        }
-        return;
-      }
-
+      if (!isPenMode || currentIndex === -1) return;
       isDrawing = true;
       const pos = getPos(e);
       currentStroke = {
@@ -436,38 +467,23 @@
     }
 
     function draw(e) {
-      // 2本指操作になったら手書きを中断
-      if (e.touches && e.touches.length > 1) {
-        if (isDrawing) {
-          strokes.pop();
-          isDrawing = false;
-          currentStroke = null;
-          redrawAll();
-        }
-        return;
-      }
-
-      if (!isDrawing) return;
-
-      // 1本指の手書き入力時は画面の余計なスクロールを阻止
+      if (!isPenMode || !isDrawing) return;
       e.preventDefault();
       const pos = getPos(e);
       currentStroke.points.push(pos);
       redrawAll();
     }
 
-    function stopDrawing(e) {
-      if (e.touches && e.touches.length > 0) return;
+    function stopDrawing() {
+      if (!isPenMode) return;
       isDrawing = false;
       currentStroke = null;
     }
 
-    // マウスイベント
     drawCanvas.addEventListener('mousedown', startDrawing);
     drawCanvas.addEventListener('mousemove', draw);
     window.addEventListener('mouseup', stopDrawing);
 
-    // タッチイベント
     drawCanvas.addEventListener('touchstart', startDrawing, { passive: false });
     drawCanvas.addEventListener('touchmove', draw, { passive: false });
     window.addEventListener('touchend', stopDrawing);
@@ -498,7 +514,6 @@
       redrawAll();
     });
 
-    // 前へ・次へボタンの動作維持
     prevBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -515,9 +530,10 @@
       prevBtn.disabled = currentIndex <= 0;
       nextBtn.disabled = currentIndex >= imageList.length - 1;
       saveBtn.disabled = currentIndex === -1;
+      undoBtn.disabled = currentIndex === -1;
+      clearBtn.disabled = currentIndex === -1;
     }
 
-    // 保存処理
     saveBtn.addEventListener('click', (e) => {
       e.preventDefault();
       if (currentIndex === -1) return;
