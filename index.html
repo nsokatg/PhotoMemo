@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
   <title>写真メモビューワー</title>
   <style>
     :root {
@@ -28,7 +28,6 @@
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      touch-action: manipulation;
     }
 
     /* ヘッダー・ツールバー */
@@ -110,7 +109,7 @@
       overflow: hidden;
     }
 
-    /* ビューワーエリア */
+    /* ビューワーエリア（拡大スクロール可能領域） */
     .viewer-area {
       flex: 1;
       position: relative;
@@ -118,17 +117,19 @@
       align-items: center;
       justify-content: center;
       background-color: #121216;
-      overflow: hidden;
+      overflow: auto; /* 拡大時のスクロールを許可 */
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-x pan-y pinch-zoom; /* ブラウザ標準の拡大・移動を許可 */
     }
 
     .canvas-container {
       position: relative;
       box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      transform-origin: center center;
     }
 
     canvas {
       display: block;
-      touch-action: none; /* ブラウザ標準のタッチスクロールを制限 */
     }
 
     #drawCanvas {
@@ -136,9 +137,10 @@
       top: 0;
       left: 0;
       cursor: crosshair;
+      touch-action: none; /* キャンバス上では1本指描画を処理 */
     }
 
-    /* サムネイルサイドバー（デスクトップ：左側 / スマホ：下部） */
+    /* サムネイル一覧 */
     .sidebar {
       width: 130px;
       background-color: var(--panel-bg);
@@ -278,7 +280,6 @@
     let strokes = [];
     let currentStroke = null;
     let isDrawing = false;
-    let isMultiTouch = false; // 2本指（ピンチ・拡大）操作中フラグ
 
     const fileInput = document.getElementById('fileInput');
     const thumbnailList = document.getElementById('thumbnailList');
@@ -393,24 +394,30 @@
       });
     }
 
+    // 拡大表示にも追従する確実な座標取得
     function getPos(e) {
       const rect = drawCanvas.getBoundingClientRect();
-      const touch = e.touches ? e.touches[0] : e;
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+      // 拡大率に対応した倍率補正
+      const scaleX = drawCanvas.width / rect.width;
+      const scaleY = drawCanvas.height / rect.height;
+
       return {
-        x: touch.clientX - rect.left,
-        y: touch.clientY - rect.top
+        x: (clientX - rect.left) * scaleX,
+        y: (clientY - rect.top) * scaleY
       };
     }
 
-    // --- 描画＆マルチタッチ判定 ---
+    // --- 描画＆ピンチ操作の切り分け ---
     function startDrawing(e) {
       if (currentIndex === -1) return;
 
-      // 2本指以上のタッチ（ズーム操作等）の場合は描画を開始せず、進行中の描画もキャンセル
+      // 2本指以上の操作はピンチズーム（拡大・移動）に委ねる
       if (e.touches && e.touches.length > 1) {
-        isMultiTouch = true;
         if (isDrawing) {
-          strokes.pop(); // ズーム開始時に打たれた1点目を削除
+          strokes.pop(); // ズーム開始前の最初の点を取り除く
           isDrawing = false;
           currentStroke = null;
           redrawAll();
@@ -418,7 +425,6 @@
         return;
       }
 
-      isMultiTouch = false;
       isDrawing = true;
       const pos = getPos(e);
       currentStroke = {
@@ -430,7 +436,7 @@
     }
 
     function draw(e) {
-      // マルチタッチ検知時、または描画モードでない場合はスキップ
+      // 2本指操作になったら手書きを中断
       if (e.touches && e.touches.length > 1) {
         if (isDrawing) {
           strokes.pop();
@@ -438,11 +444,12 @@
           currentStroke = null;
           redrawAll();
         }
-        isMultiTouch = true;
         return;
       }
 
-      if (!isDrawing || isMultiTouch) return;
+      if (!isDrawing) return;
+
+      // 1本指の手書き入力時は画面の余計なスクロールを阻止
       e.preventDefault();
       const pos = getPos(e);
       currentStroke.points.push(pos);
@@ -452,7 +459,6 @@
     function stopDrawing(e) {
       if (e.touches && e.touches.length > 0) return;
       isDrawing = false;
-      isMultiTouch = false;
       currentStroke = null;
     }
 
@@ -492,7 +498,7 @@
       redrawAll();
     });
 
-    // 前へ・次へボタンのイベント制御強化
+    // 前へ・次へボタンの動作維持
     prevBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
