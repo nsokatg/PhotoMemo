@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>写真メモビューワー</title>
   <style>
     :root {
@@ -16,6 +16,7 @@
       box-sizing: border-box;
       margin: 0;
       padding: 0;
+      -webkit-tap-highlight-color: transparent;
     }
 
     body {
@@ -23,28 +24,30 @@
       background-color: var(--bg-color);
       color: var(--text-color);
       height: 100vh;
+      height: 100dvh;
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      touch-action: manipulation;
     }
 
     /* ヘッダー・ツールバー */
     header {
       background-color: var(--panel-bg);
-      padding: 10px 16px;
+      padding: 8px 12px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
-      flex-wrap: wrap;
+      gap: 8px;
       border-bottom: 1px solid #3a3a4c;
       z-index: 10;
+      flex-wrap: wrap;
     }
 
     .group {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
     }
 
     label.btn, button.btn {
@@ -57,26 +60,22 @@
       font-size: 14px;
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
       user-select: none;
       transition: background-color 0.2s;
     }
 
-    label.btn:hover, button.btn:hover {
-      background-color: #4c4c64;
+    label.btn:active, button.btn:active {
+      background-color: #55556a;
     }
 
-    button.btn-primary {
+    button.btn-primary, label.btn-primary {
       background-color: var(--accent-color);
       border-color: #005999;
     }
 
-    button.btn-primary:hover {
-      background-color: #005999;
-    }
-
     button:disabled, label.disabled {
-      opacity: 0.5;
+      opacity: 0.4;
       cursor: not-allowed;
     }
 
@@ -87,11 +86,12 @@
     .color-picker {
       display: flex;
       gap: 6px;
+      align-items: center;
     }
 
     .color-btn {
-      width: 24px;
-      height: 24px;
+      width: 26px;
+      height: 26px;
       border-radius: 50%;
       border: 2px solid transparent;
       cursor: pointer;
@@ -108,41 +108,6 @@
       display: flex;
       position: relative;
       overflow: hidden;
-    }
-
-    /* サムネイルサイドバー */
-    .sidebar {
-      width: 140px;
-      background-color: var(--panel-bg);
-      border-right: 1px solid #3a3a4c;
-      overflow-y: auto;
-      padding: 10px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .thumb-item {
-      width: 100%;
-      height: 90px;
-      border-radius: 6px;
-      overflow: hidden;
-      border: 2px solid transparent;
-      cursor: pointer;
-      background-color: #121216;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .thumb-item img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-    }
-
-    .thumb-item.active {
-      border-color: var(--accent-color);
     }
 
     /* ビューワーエリア */
@@ -163,7 +128,7 @@
 
     canvas {
       display: block;
-      touch-action: none; /* スマホ・タブレットの手書きスクロール防止 */
+      touch-action: none; /* ブラウザ標準のタッチスクロールを制限 */
     }
 
     #drawCanvas {
@@ -173,11 +138,72 @@
       cursor: crosshair;
     }
 
+    /* サムネイルサイドバー（デスクトップ：左側 / スマホ：下部） */
+    .sidebar {
+      width: 130px;
+      background-color: var(--panel-bg);
+      border-right: 1px solid #3a3a4c;
+      overflow-y: auto;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 5;
+    }
+
+    @media (max-width: 600px) {
+      .main-container {
+        flex-direction: column;
+      }
+      .sidebar {
+        width: 100%;
+        height: 80px;
+        flex-direction: row;
+        overflow-x: auto;
+        overflow-y: hidden;
+        border-right: none;
+        border-top: 1px solid #3a3a4c;
+        order: 2;
+      }
+      .viewer-area {
+        order: 1;
+      }
+      .thumb-item {
+        min-width: 70px !important;
+        height: 100% !important;
+      }
+    }
+
+    .thumb-item {
+      width: 100%;
+      height: 80px;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 2px solid transparent;
+      cursor: pointer;
+      background-color: #121216;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .thumb-item img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .thumb-item.active {
+      border-color: var(--accent-color);
+    }
+
     .empty-state {
       position: absolute;
       text-align: center;
       color: #888899;
       pointer-events: none;
+      padding: 20px;
     }
 
     .empty-state p {
@@ -195,48 +221,44 @@
         📷 写真を開く
         <input type="file" id="fileInput" accept="image/*" multiple>
       </label>
-      <button class="btn" id="prevBtn" disabled>◀ 前へ</button>
-      <button class="btn" id="nextBtn" disabled>次へ ▶</button>
+      <button class="btn" id="prevBtn" type="button" disabled>前へ</button>
+      <button class="btn" id="nextBtn" type="button" disabled>次へ</button>
     </div>
 
     <div class="group">
-      <!-- ペン設定 -->
-      <span style="font-size:13px; color:#aaa;">色:</span>
       <div class="color-picker">
         <div class="color-btn active" style="background:#ff3b30;" data-color="#ff3b30"></div>
         <div class="color-btn" style="background:#007aff;" data-color="#007aff"></div>
         <div class="color-btn" style="background:#ffcc00;" data-color="#ffcc00"></div>
         <div class="color-btn" style="background:#34c759;" data-color="#34c759"></div>
-        <div class="color-btn" style="background:#000000; border: 1px solid #666;" data-color="#000000"></div>
         <div class="color-btn" style="background:#ffffff;" data-color="#ffffff"></div>
       </div>
 
-      <span style="font-size:13px; color:#aaa; margin-left:8px;">太さ:</span>
-      <input type="range" id="lineWidth" min="2" max="20" value="4" style="width:70px;">
+      <input type="range" id="lineWidth" min="2" max="20" value="4" style="width:60px;">
 
-      <button class="btn" id="undoBtn">↩ 戻す</button>
-      <button class="btn" id="clearBtn">🗑 クリア</button>
+      <button class="btn" id="undoBtn" type="button">↩</button>
+      <button class="btn" id="clearBtn" type="button">🗑</button>
     </div>
 
     <div class="group">
-      <button class="btn btn-primary" id="saveBtn" disabled>💾 メモ付き保存</button>
+      <button class="btn btn-primary" id="saveBtn" type="button" disabled>💾 保存</button>
     </div>
   </header>
 
   <!-- メインエリア -->
   <div class="main-container">
-    <!-- 左側サムネイル -->
+    <!-- サムネイル一覧 -->
     <div class="sidebar" id="thumbnailList"></div>
 
-    <!-- 右側中央ビューワー -->
+    <!-- 中央ビューワー -->
     <div class="viewer-area" id="viewerArea">
       <div class="empty-state" id="emptyState">
-        <svg width="64" height="64" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+        <svg width="50" height="50" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
           <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
           <circle cx="8.5" cy="8.5" r="1.5"></circle>
           <polyline points="21 15 16 10 5 21"></polyline>
         </svg>
-        <p>上部の「写真を開く」ボタンから画像を選択してください</p>
+        <p>「写真を開く」から画像を選択してください</p>
       </div>
 
       <div class="canvas-container" id="canvasContainer" style="display:none;">
@@ -247,18 +269,17 @@
   </div>
 
   <script>
-    // 状態管理
     let imageList = [];
     let currentIndex = -1;
 
     let currentImg = new Image();
     let currentColor = '#ff3b30';
     let currentLineWidth = 4;
-    let strokes = []; // 手書き履歴 (Undo用)
+    let strokes = [];
     let currentStroke = null;
     let isDrawing = false;
+    let isMultiTouch = false; // 2本指（ピンチ・拡大）操作中フラグ
 
-    // DOM要素
     const fileInput = document.getElementById('fileInput');
     const thumbnailList = document.getElementById('thumbnailList');
     const viewerArea = document.getElementById('viewerArea');
@@ -276,7 +297,7 @@
     const clearBtn = document.getElementById('clearBtn');
     const lineWidthInput = document.getElementById('lineWidth');
 
-    // 画像読み込みイベント
+    // 写真選択
     fileInput.addEventListener('change', (e) => {
       const files = Array.from(e.target.files);
       if (files.length === 0) return;
@@ -290,7 +311,6 @@
       loadImage(0);
     });
 
-    // サムネイル表示
     function renderThumbnails() {
       thumbnailList.innerHTML = '';
       imageList.forEach((item, index) => {
@@ -299,18 +319,21 @@
         const img = document.createElement('img');
         img.src = item.url;
         div.appendChild(img);
-        div.addEventListener('click', () => loadImage(index));
+        
+        div.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          loadImage(index);
+        });
         thumbnailList.appendChild(div);
       });
     }
 
-    // 画像セット
     function loadImage(index) {
       if (index < 0 || index >= imageList.length) return;
       currentIndex = index;
-      strokes = []; // メモのリセット
+      strokes = [];
 
-      // サムネイル選択状態の更新
       Array.from(thumbnailList.children).forEach((el, i) => {
         el.classList.toggle('active', i === index);
       });
@@ -327,9 +350,8 @@
       currentImg.src = imageList[index].url;
     }
 
-    // ビューワーサイズに合わせたキャンバスリサイズ
     function fitCanvasToViewer() {
-      const margin = 20;
+      const margin = 10;
       const maxWidth = viewerArea.clientWidth - margin;
       const maxHeight = viewerArea.clientHeight - margin;
 
@@ -350,13 +372,10 @@
       canvasContainer.style.height = height + 'px';
     }
 
-    // 描画処理
     function redrawAll() {
-      // 背景画像の描画
       bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
       bgCtx.drawImage(currentImg, 0, 0, bgCanvas.width, bgCanvas.height);
 
-      // 手書きメモの描画
       drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
       drawCtx.lineCap = 'round';
       drawCtx.lineJoin = 'round';
@@ -374,20 +393,32 @@
       });
     }
 
-    // マウス / タッチ位置取得
     function getPos(e) {
       const rect = drawCanvas.getBoundingClientRect();
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const touch = e.touches ? e.touches[0] : e;
       return {
-        x: clientX - rect.left,
-        y: clientY - rect.top
+        x: touch.clientX - rect.left,
+        y: touch.clientY - rect.top
       };
     }
 
-    // 手書きイベント登録
+    // --- 描画＆マルチタッチ判定 ---
     function startDrawing(e) {
       if (currentIndex === -1) return;
+
+      // 2本指以上のタッチ（ズーム操作等）の場合は描画を開始せず、進行中の描画もキャンセル
+      if (e.touches && e.touches.length > 1) {
+        isMultiTouch = true;
+        if (isDrawing) {
+          strokes.pop(); // ズーム開始時に打たれた1点目を削除
+          isDrawing = false;
+          currentStroke = null;
+          redrawAll();
+        }
+        return;
+      }
+
+      isMultiTouch = false;
       isDrawing = true;
       const pos = getPos(e);
       currentStroke = {
@@ -399,27 +430,44 @@
     }
 
     function draw(e) {
-      if (!isDrawing) return;
+      // マルチタッチ検知時、または描画モードでない場合はスキップ
+      if (e.touches && e.touches.length > 1) {
+        if (isDrawing) {
+          strokes.pop();
+          isDrawing = false;
+          currentStroke = null;
+          redrawAll();
+        }
+        isMultiTouch = true;
+        return;
+      }
+
+      if (!isDrawing || isMultiTouch) return;
       e.preventDefault();
       const pos = getPos(e);
       currentStroke.points.push(pos);
       redrawAll();
     }
 
-    function stopDrawing() {
+    function stopDrawing(e) {
+      if (e.touches && e.touches.length > 0) return;
       isDrawing = false;
+      isMultiTouch = false;
       currentStroke = null;
     }
 
+    // マウスイベント
     drawCanvas.addEventListener('mousedown', startDrawing);
     drawCanvas.addEventListener('mousemove', draw);
     window.addEventListener('mouseup', stopDrawing);
 
+    // タッチイベント
     drawCanvas.addEventListener('touchstart', startDrawing, { passive: false });
     drawCanvas.addEventListener('touchmove', draw, { passive: false });
     window.addEventListener('touchend', stopDrawing);
+    window.addEventListener('touchcancel', stopDrawing);
 
-    // 色変更
+    // 色選択
     document.querySelectorAll('.color-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active'));
@@ -428,26 +476,34 @@
       });
     });
 
-    // 太さ変更
     lineWidthInput.addEventListener('input', (e) => {
       currentLineWidth = e.target.value;
     });
 
-    // Undo (1つ戻す)
-    undoBtn.addEventListener('click', () => {
+    undoBtn.addEventListener('click', (e) => {
+      e.preventDefault();
       strokes.pop();
       redrawAll();
     });
 
-    // クリア
-    clearBtn.addEventListener('click', () => {
+    clearBtn.addEventListener('click', (e) => {
+      e.preventDefault();
       strokes = [];
       redrawAll();
     });
 
-    // 次へ・前へボタン
-    prevBtn.addEventListener('click', () => loadImage(currentIndex - 1));
-    nextBtn.addEventListener('click', () => loadImage(currentIndex + 1));
+    // 前へ・次へボタンのイベント制御強化
+    prevBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      loadImage(currentIndex - 1);
+    });
+
+    nextBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      loadImage(currentIndex + 1);
+    });
 
     function updateNavButtons() {
       prevBtn.disabled = currentIndex <= 0;
@@ -455,20 +511,18 @@
       saveBtn.disabled = currentIndex === -1;
     }
 
-    // 保存（写真＋手書きを合成）
-    saveBtn.addEventListener('click', () => {
+    // 保存処理
+    saveBtn.addEventListener('click', (e) => {
+      e.preventDefault();
       if (currentIndex === -1) return;
 
-      // 保存用のOff-screen Canvasを作成（元の画像解像度に合わせて保存）
       const exportCanvas = document.createElement('canvas');
       exportCanvas.width = currentImg.width;
       exportCanvas.height = currentImg.height;
       const expCtx = exportCanvas.getContext('2d');
 
-      // 1. 元画像を描画
       expCtx.drawImage(currentImg, 0, 0);
 
-      // 2. 拡大表示倍率に合わせてスケール計算し、手書きメモを重畳
       const scaleX = currentImg.width / bgCanvas.width;
       const scaleY = currentImg.height / bgCanvas.height;
 
@@ -487,7 +541,6 @@
         expCtx.stroke();
       });
 
-      // 3. ダウンロード処理
       const link = document.createElement('a');
       const originalName = imageList[currentIndex].name.replace(/\.[^/.]+$/, "");
       link.download = `${originalName}_memo.png`;
@@ -495,7 +548,6 @@
       link.click();
     });
 
-    // ウインドウリサイズ時の追従
     window.addEventListener('resize', () => {
       if (currentIndex !== -1) {
         fitCanvasToViewer();
