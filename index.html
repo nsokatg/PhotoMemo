@@ -1,7 +1,14 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <link rel="apple-touch-icon-2" href="/PhotoMemo/photomemo.png">
+  <!-- 正しい rel 属性に変更 -->
+  <link rel="apple-touch-icon" href="/PhotoMemo/photomemo.png">
+  
+  <!-- iOS向けにホーム画面から起動した際のデザイン設定を追加 -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="写真メモ">
+
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
   <title>写真メモビューワー</title>
