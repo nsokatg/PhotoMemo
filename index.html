@@ -1,10 +1,7 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <!-- 正しい rel 属性に変更 -->
   <link rel="apple-touch-icon" href="/PhotoMemo/photomemo.png">
-  
-  <!-- iOS向けにホーム画面から起動した際のデザイン設定を追加 -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="写真メモ">
@@ -80,6 +77,12 @@
     button.btn-primary, label.btn-primary {
       background-color: var(--accent-color);
       border-color: #005999;
+    }
+
+    button.btn-success {
+      background-color: #2b6a3b;
+      border-color: #3a8b4f;
+      color: #b3ffc6;
     }
 
     button.btn-danger {
@@ -281,9 +284,11 @@
     </div>
 
     <div class="group">
-      <button class="btn btn-danger" id="deleteBtn" type="button" disabled title="表示中の写真を削除">🗑 削除</button>
+      <button class="btn" id="copyBtn" type="button" disabled title="画像をクリップボードにコピー">📋 コピー</button>
+      <button class="btn" id="shareBtn" type="button" disabled title="共有メニューを開く">📤 共有</button>
+      <button class="btn btn-primary" id="saveBtn" type="button" disabled title="ファイルとしてダウンロード">💾 保存</button>
+      <button class="btn btn-danger" id="deleteBtn" type="button" disabled title="この写真を削除">🗑</button>
       <button class="btn btn-danger" id="clearAllBtn" type="button" title="全データ削除">全消去</button>
-      <button class="btn btn-primary" id="saveBtn" type="button" disabled>💾 書き出し</button>
     </div>
   </header>
 
@@ -309,7 +314,7 @@
   </div>
 
   <script>
-    let imageList = []; // { id, name, blob, url, strokes }
+    let imageList = []; 
     let currentIndex = -1;
 
     let currentImg = new Image();
@@ -330,6 +335,8 @@
     const prevBtn = document.getElementById('prevBtn');
     const nextBtn = document.getElementById('nextBtn');
     const saveBtn = document.getElementById('saveBtn');
+    const copyBtn = document.getElementById('copyBtn');
+    const shareBtn = document.getElementById('shareBtn');
     const deleteBtn = document.getElementById('deleteBtn');
     const clearAllBtn = document.getElementById('clearAllBtn');
     const modeBtn = document.getElementById('modeBtn');
@@ -407,7 +414,6 @@
       });
     }
 
-    // 初期起動時のデータ読み込み
     window.addEventListener('DOMContentLoaded', async () => {
       try {
         const storedItems = await loadAllFromDB();
@@ -689,22 +695,21 @@
       prevBtn.disabled = !hasImage || currentIndex <= 0;
       nextBtn.disabled = !hasImage || currentIndex >= imageList.length - 1;
       saveBtn.disabled = !hasImage;
+      copyBtn.disabled = !hasImage;
+      shareBtn.disabled = !hasImage;
       deleteBtn.disabled = !hasImage;
       undoBtn.disabled = !hasImage;
       clearBtn.disabled = !hasImage;
     }
 
-    saveBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      if (currentIndex === -1) return;
-
+    // 合成画像を作成する共通関数
+    function generateExportCanvas() {
       const exportCanvas = document.createElement('canvas');
       exportCanvas.width = currentImg.width;
       exportCanvas.height = currentImg.height;
       const expCtx = exportCanvas.getContext('2d');
 
       expCtx.drawImage(currentImg, 0, 0);
-
       expCtx.lineCap = 'round';
       expCtx.lineJoin = 'round';
 
@@ -720,12 +725,67 @@
         }
         expCtx.stroke();
       });
+      return exportCanvas;
+    }
 
+    // 💾 保存（ダウンロード）
+    saveBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (currentIndex === -1) return;
+
+      const exportCanvas = generateExportCanvas();
       const link = document.createElement('a');
       const originalName = imageList[currentIndex].name.replace(/\.[^/.]+$/, "");
       link.download = `${originalName}_memo.png`;
       link.href = exportCanvas.toDataURL('image/png');
       link.click();
+    });
+
+    // 📋 クリップボードにコピー
+    copyBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (currentIndex === -1) return;
+
+      const exportCanvas = generateExportCanvas();
+      exportCanvas.toBlob(async (blob) => {
+        try {
+          await navigator.clipboard.write([
+            new ClipboardItem({ 'image/png': blob })
+          ]);
+          alert('画像をクリップボードにコピーしました！メールなどにそのまま貼り付け（Ctrl+V等）できます。');
+        } catch (err) {
+          console.error('コピー失敗:', err);
+          alert('お使いの環境またはブラウザではクリップボードへの画像コピーがサポートされていません。');
+        }
+      }, 'image/png');
+    });
+
+    // 📤 共有 (Web Share API)
+    shareBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (currentIndex === -1) return;
+
+      const exportCanvas = generateExportCanvas();
+      exportCanvas.toBlob(async (blob) => {
+        const originalName = imageList[currentIndex].name.replace(/\.[^/.]+$/, "");
+        const file = new File([blob], `${originalName}_memo.png`, { type: 'image/png' });
+
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          try {
+            await navigator.share({
+              files: [file],
+              title: '写真メモ',
+              text: '写真メモを共有します'
+            });
+          } catch (err) {
+            if (err.name !== 'AbortError') {
+              console.error('共有エラー:', err);
+            }
+          }
+        } else {
+          alert('お使いの環境では直接共有機能がサポートされていません。「保存」ボタンからファイルをダウンロードして添付してください。');
+        }
+      }, 'image/png');
     });
 
     window.addEventListener('resize', () => {
