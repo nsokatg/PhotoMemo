@@ -18,6 +18,7 @@
       --panel-bg: #2b2b36;
       --accent-color: #007acc;
       --text-color: #e0e0e0;
+      --danger-color: #e63946;
     }
 
     * {
@@ -79,6 +80,12 @@
     button.btn-primary, label.btn-primary {
       background-color: var(--accent-color);
       border-color: #005999;
+    }
+
+    button.btn-danger {
+      background-color: #6a2b2b;
+      border-color: #8b3a3a;
+      color: #ffb3b3;
     }
 
     /* モード切替ボタンのアクティブ状態 */
@@ -269,12 +276,14 @@
         <input type="range" id="lineWidth" min="2" max="40" value="8" style="width:50px;">
       </div>
 
-      <button class="btn" id="undoBtn" type="button" disabled>↩</button>
-      <button class="btn" id="clearBtn" type="button" disabled>🗑</button>
+      <button class="btn" id="undoBtn" type="button" disabled title="1つ戻す">↩</button>
+      <button class="btn" id="clearBtn" type="button" disabled title="描画のクリア">🧹</button>
     </div>
 
     <div class="group">
-      <button class="btn btn-primary" id="saveBtn" type="button" disabled>💾 保存</button>
+      <button class="btn btn-danger" id="deleteBtn" type="button" disabled title="表示中の写真を削除">🗑 削除</button>
+      <button class="btn btn-danger" id="clearAllBtn" type="button" title="全データ削除">全消去</button>
+      <button class="btn btn-primary" id="saveBtn" type="button" disabled>💾 書き出し</button>
     </div>
   </header>
 
@@ -300,14 +309,12 @@
   </div>
 
   <script>
-    let imageList = [];
+    let imageList = []; // { id, name, blob, url, strokes }
     let currentIndex = -1;
 
     let currentImg = new Image();
     let currentColor = '#ff3b30';
     let currentLineWidth = 8;
-    let strokes = [];
-    let currentStroke = null;
     let isDrawing = false;
     let isPenMode = false;
 
@@ -323,12 +330,102 @@
     const prevBtn = document.getElementById('prevBtn');
     const nextBtn = document.getElementById('nextBtn');
     const saveBtn = document.getElementById('saveBtn');
+    const deleteBtn = document.getElementById('deleteBtn');
+    const clearAllBtn = document.getElementById('clearAllBtn');
     const modeBtn = document.getElementById('modeBtn');
     const penToolGroup = document.getElementById('penToolGroup');
     const emptyState = document.getElementById('emptyState');
     const undoBtn = document.getElementById('undoBtn');
     const clearBtn = document.getElementById('clearBtn');
     const lineWidthInput = document.getElementById('lineWidth');
+
+    // IndexedDB の初期化と管理
+    const DB_NAME = 'PhotoMemoDB';
+    const DB_VERSION = 1;
+    const STORE_NAME = 'photos';
+
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains(STORE_NAME)) {
+            db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+          }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function saveImageToDB(item) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        store.put({
+          id: item.id,
+          name: item.name,
+          blob: item.blob,
+          strokes: item.strokes || []
+        });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+
+    async function deleteImageFromDB(id) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        store.delete(id);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+
+    async function clearAllFromDB() {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        store.clear();
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+
+    async function loadAllFromDB() {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.getAll();
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    // 初期起動時のデータ読み込み
+    window.addEventListener('DOMContentLoaded', async () => {
+      try {
+        const storedItems = await loadAllFromDB();
+        if (storedItems && storedItems.length > 0) {
+          imageList = storedItems.map(item => ({
+            id: item.id,
+            name: item.name,
+            blob: item.blob,
+            url: URL.createObjectURL(item.blob),
+            strokes: item.strokes || []
+          }));
+          renderThumbnails();
+          loadImage(0);
+        }
+      } catch (err) {
+        console.error('DB初期ロード失敗:', err);
+      }
+    });
 
     modeBtn.addEventListener('click', (e) => {
       e.preventDefault();
@@ -350,17 +447,27 @@
       }
     });
 
-    fileInput.addEventListener('change', (e) => {
+    fileInput.addEventListener('change', async (e) => {
       const files = Array.from(e.target.files);
       if (files.length === 0) return;
 
-      imageList = files.map(file => ({
-        name: file.name,
-        url: URL.createObjectURL(file)
-      }));
+      const startIndex = imageList.length;
+
+      for (const file of files) {
+        const item = {
+          id: Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+          name: file.name,
+          blob: file,
+          url: URL.createObjectURL(file),
+          strokes: []
+        };
+        imageList.push(item);
+        await saveImageToDB(item);
+      }
 
       renderThumbnails();
-      loadImage(0);
+      loadImage(startIndex);
+      fileInput.value = '';
     });
 
     function renderThumbnails() {
@@ -382,9 +489,15 @@
     }
 
     function loadImage(index) {
-      if (index < 0 || index >= imageList.length) return;
+      if (index < 0 || index >= imageList.length) {
+        currentIndex = -1;
+        emptyState.style.display = 'block';
+        canvasContainer.style.display = 'none';
+        updateNavButtons();
+        return;
+      }
+
       currentIndex = index;
-      strokes = [];
 
       Array.from(thumbnailList.children).forEach((el, i) => {
         el.classList.toggle('active', i === index);
@@ -402,19 +515,17 @@
       currentImg.src = imageList[index].url;
     }
 
-    // 元画像の解像度（画質）を100%維持するように修正
     function fitCanvasToViewer() {
+      if (currentIndex === -1) return;
       const margin = 10;
       const maxWidth = viewerArea.clientWidth - margin;
       const maxHeight = viewerArea.clientHeight - margin;
 
-      // キャンバスの内部解像度は元画像の画質そのまま（100%）に設定
       bgCanvas.width = currentImg.width;
       bgCanvas.height = currentImg.height;
       drawCanvas.width = currentImg.width;
       drawCanvas.height = currentImg.height;
 
-      // 表示上のサイズ（CSS指定）のみ画面枠にフィットさせる
       const scale = Math.min(maxWidth / currentImg.width, maxHeight / currentImg.height, 1);
       const displayWidth = Math.round(currentImg.width * scale);
       const displayHeight = Math.round(currentImg.height * scale);
@@ -424,6 +535,8 @@
     }
 
     function redrawAll() {
+      if (currentIndex === -1) return;
+
       bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
       bgCtx.drawImage(currentImg, 0, 0, bgCanvas.width, bgCanvas.height);
 
@@ -431,7 +544,8 @@
       drawCtx.lineCap = 'round';
       drawCtx.lineJoin = 'round';
 
-      strokes.forEach(stroke => {
+      const currentStrokes = imageList[currentIndex].strokes || [];
+      currentStrokes.forEach(stroke => {
         if (stroke.points.length < 2) return;
         drawCtx.beginPath();
         drawCtx.strokeStyle = stroke.color;
@@ -462,26 +576,29 @@
       if (!isPenMode || currentIndex === -1) return;
       isDrawing = true;
       const pos = getPos(e);
-      currentStroke = {
+      const currentStroke = {
         color: currentColor,
         width: currentLineWidth,
         points: [pos]
       };
-      strokes.push(currentStroke);
+      imageList[currentIndex].strokes.push(currentStroke);
     }
 
     function draw(e) {
-      if (!isPenMode || !isDrawing) return;
+      if (!isPenMode || !isDrawing || currentIndex === -1) return;
       e.preventDefault();
       const pos = getPos(e);
-      currentStroke.points.push(pos);
+      const strokes = imageList[currentIndex].strokes;
+      strokes[strokes.length - 1].points.push(pos);
       redrawAll();
     }
 
-    function stopDrawing() {
-      if (!isPenMode) return;
+    async function stopDrawing() {
+      if (!isPenMode || !isDrawing) return;
       isDrawing = false;
-      currentStroke = null;
+      if (currentIndex !== -1) {
+        await saveImageToDB(imageList[currentIndex]);
+      }
     }
 
     drawCanvas.addEventListener('mousedown', startDrawing);
@@ -505,16 +622,54 @@
       currentLineWidth = e.target.value;
     });
 
-    undoBtn.addEventListener('click', (e) => {
+    undoBtn.addEventListener('click', async (e) => {
       e.preventDefault();
-      strokes.pop();
+      if (currentIndex === -1) return;
+      imageList[currentIndex].strokes.pop();
       redrawAll();
+      await saveImageToDB(imageList[currentIndex]);
     });
 
-    clearBtn.addEventListener('click', (e) => {
+    clearBtn.addEventListener('click', async (e) => {
       e.preventDefault();
-      strokes = [];
+      if (currentIndex === -1) return;
+      imageList[currentIndex].strokes = [];
       redrawAll();
+      await saveImageToDB(imageList[currentIndex]);
+    });
+
+    deleteBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (currentIndex === -1) return;
+
+      if (confirm('表示中の写真メモを削除しますか？')) {
+        const itemToDelete = imageList[currentIndex];
+        await deleteImageFromDB(itemToDelete.id);
+        URL.revokeObjectURL(itemToDelete.url);
+
+        imageList.splice(currentIndex, 1);
+        renderThumbnails();
+
+        if (imageList.length === 0) {
+          loadImage(-1);
+        } else {
+          const nextIndex = currentIndex >= imageList.length ? imageList.length - 1 : currentIndex;
+          loadImage(nextIndex);
+        }
+      }
+    });
+
+    clearAllBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (imageList.length === 0) return;
+
+      if (confirm('すべての写真メモを完全に削除しますか？')) {
+        await clearAllFromDB();
+        imageList.forEach(item => URL.revokeObjectURL(item.url));
+        imageList = [];
+        renderThumbnails();
+        loadImage(-1);
+      }
     });
 
     prevBtn.addEventListener('click', (e) => {
@@ -530,11 +685,13 @@
     });
 
     function updateNavButtons() {
-      prevBtn.disabled = currentIndex <= 0;
-      nextBtn.disabled = currentIndex >= imageList.length - 1;
-      saveBtn.disabled = currentIndex === -1;
-      undoBtn.disabled = currentIndex === -1;
-      clearBtn.disabled = currentIndex === -1;
+      const hasImage = currentIndex !== -1;
+      prevBtn.disabled = !hasImage || currentIndex <= 0;
+      nextBtn.disabled = !hasImage || currentIndex >= imageList.length - 1;
+      saveBtn.disabled = !hasImage;
+      deleteBtn.disabled = !hasImage;
+      undoBtn.disabled = !hasImage;
+      clearBtn.disabled = !hasImage;
     }
 
     saveBtn.addEventListener('click', (e) => {
@@ -551,7 +708,8 @@
       expCtx.lineCap = 'round';
       expCtx.lineJoin = 'round';
 
-      strokes.forEach(stroke => {
+      const currentStrokes = imageList[currentIndex].strokes || [];
+      currentStrokes.forEach(stroke => {
         if (stroke.points.length < 2) return;
         expCtx.beginPath();
         expCtx.strokeStyle = stroke.color;
