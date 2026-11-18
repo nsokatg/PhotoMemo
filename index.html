@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">
   <link rel="apple-touch-icon" href="/PhotoMemo/photomemo.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="写真メモ">
   <title>写真メモ</title>
   <style>
@@ -15,6 +15,10 @@
       --accent-color: #007acc;
       --text-color: #e0e0e0;
       --danger-color: #e63946;
+    }
+
+    html {
+      background-color: var(--bg-color);
     }
 
     * {
@@ -39,7 +43,7 @@
     header {
       background-color: var(--panel-bg);
       padding: 8px 12px;
-      padding-top: calc(8px + env(safe-area-inset-top, 0px));
+      padding-top: calc(14px + env(safe-area-inset-top, 0px));
       padding-left: calc(12px + env(safe-area-inset-left, 0px));
       padding-right: calc(12px + env(safe-area-inset-right, 0px));
       display: flex;
@@ -67,7 +71,9 @@
       font-size: 14px;
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 4px;
+      white-space: nowrap;
       user-select: none;
       transition: background-color 0.2s;
     }
@@ -132,6 +138,10 @@
     .color-btn.active {
       border-color: #ffffff;
       transform: scale(1.15);
+    }
+
+    #lineWidth {
+      width: 50px;
     }
 
     /* メインレイアウト */
@@ -363,23 +373,81 @@
     .toast.on {
       opacity: 1;
     }
+
+    /* ===== ボタンの折り返し防止・縦持ち（スマホ）向けレイアウト ===== */
+    @media (max-width: 600px) {
+      header {
+        display: grid;
+        grid-template-columns: 100%;
+        gap: 6px;
+        padding-bottom: 8px;
+      }
+      header .group {
+        width: 100%;
+        min-width: 0;
+      }
+
+      /* 1段目・3段目：等分割して、絵文字の下に文字を置く */
+      .g-file, .g-out {
+        display: grid;
+        gap: 6px;
+      }
+      .g-file { grid-template-columns: repeat(4, 1fr); }
+      .g-out  { grid-template-columns: repeat(5, 1fr); }
+
+      .g-file .btn, .g-out .btn {
+        flex-direction: column;
+        gap: 2px;
+        height: 52px;
+        min-width: 0;
+        padding: 4px 2px;
+        font-size: 11px;
+        line-height: 1.2;
+      }
+      .btn .ico { font-size: 20px; line-height: 1; }
+
+      /* 2段目：モード切替は横幅いっぱい、その下に色・太さ・戻す・消しゴム */
+      .g-pen {
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .g-pen #modeBtn {
+        flex: 1 1 100%;
+        padding: 10px;
+        font-size: 15px;
+      }
+      .g-pen #penToolGroup {
+        flex: 1 1 0;
+        min-width: 0;
+        justify-content: space-between;
+        gap: 4px;
+      }
+      .color-btn { width: 28px; height: 28px; flex: 0 0 28px; }
+      #lineWidth { flex: 1 1 40px; width: auto; min-width: 40px; }
+      .g-pen #undoBtn, .g-pen #clearBtn {
+        flex: 0 0 44px;
+        height: 38px;
+        padding: 0;
+        font-size: 16px;
+      }
+    }
   </style>
 </head>
 <body>
 
   <!-- ツールバー -->
   <header>
-    <div class="group">
+    <div class="group g-file">
       <label class="btn btn-primary">
-        📷 写真を開く
+        <span class="ico">📷</span><span class="lbl">写真を開く</span>
         <input type="file" id="fileInput" accept="image/*" multiple>
       </label>
-      <button class="btn btn-success" id="cameraBtn" type="button" title="カメラを選んで撮影">📸 カメラ</button>
-      <button class="btn" id="prevBtn" type="button" disabled>前へ</button>
-      <button class="btn" id="nextBtn" type="button" disabled>次へ</button>
+      <button class="btn btn-success" id="cameraBtn" type="button" title="カメラを選んで撮影"><span class="ico">📸</span><span class="lbl">カメラ</span></button>
+      <button class="btn" id="prevBtn" type="button" disabled><span class="ico">◀</span><span class="lbl">前へ</span></button>
+      <button class="btn" id="nextBtn" type="button" disabled><span class="ico">▶</span><span class="lbl">次へ</span></button>
     </div>
 
-    <div class="group">
+    <div class="group g-pen">
       <button class="btn btn-mode active-move" id="modeBtn" type="button">✋ 移動モード</button>
 
       <div class="color-picker" id="penToolGroup" style="opacity: 0.5; pointer-events: none;">
@@ -388,19 +456,19 @@
         <div class="color-btn" style="background:#ffcc00;" data-color="#ffcc00"></div>
         <div class="color-btn" style="background:#34c759;" data-color="#34c759"></div>
         <div class="color-btn" style="background:#ffffff;" data-color="#ffffff"></div>
-        <input type="range" id="lineWidth" min="2" max="40" value="8" style="width:50px;">
+        <input type="range" id="lineWidth" min="2" max="40" value="8">
       </div>
 
       <button class="btn" id="undoBtn" type="button" disabled title="1つ戻す">↩</button>
       <button class="btn" id="clearBtn" type="button" disabled title="描画のクリア">🧹</button>
     </div>
 
-    <div class="group">
-      <button class="btn" id="copyBtn" type="button" disabled title="画像をクリップボードにコピー">📋 コピー</button>
-      <button class="btn" id="shareBtn" type="button" disabled title="共有メニューを開く">📤 共有</button>
-      <button class="btn btn-primary" id="saveBtn" type="button" disabled title="ファイルとしてダウンロード">💾 保存</button>
-      <button class="btn btn-danger" id="deleteBtn" type="button" disabled title="この写真を削除">🗑</button>
-      <button class="btn btn-danger" id="clearAllBtn" type="button" title="全データ削除">全消去</button>
+    <div class="group g-out">
+      <button class="btn" id="copyBtn" type="button" disabled title="画像をクリップボードにコピー"><span class="ico">📋</span><span class="lbl">コピー</span></button>
+      <button class="btn" id="shareBtn" type="button" disabled title="共有メニューを開く"><span class="ico">📤</span><span class="lbl">共有</span></button>
+      <button class="btn btn-primary" id="saveBtn" type="button" disabled title="ファイルとしてダウンロード"><span class="ico">💾</span><span class="lbl">保存</span></button>
+      <button class="btn btn-danger" id="deleteBtn" type="button" disabled title="この写真を削除"><span class="ico">🗑</span><span class="lbl">削除</span></button>
+      <button class="btn btn-danger" id="clearAllBtn" type="button" title="全データ削除"><span class="ico">⚠️</span><span class="lbl">全消去</span></button>
     </div>
   </header>
 
