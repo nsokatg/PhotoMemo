@@ -1,13 +1,12 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">
   <link rel="apple-touch-icon" href="/PhotoMemo/photomemo.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="写真メモ">
-
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
   <title>写真メモビューワー</title>
   <style>
     :root {
@@ -36,10 +35,13 @@
       overflow: hidden;
     }
 
-    /* ヘッダー・ツールバー */
+    /* ヘッダー・ツールバー（ホーム画面アプリ時のステータスバーと重ならないよう余白を確保） */
     header {
       background-color: var(--panel-bg);
       padding: 8px 12px;
+      padding-top: calc(8px + env(safe-area-inset-top, 0px));
+      padding-left: calc(12px + env(safe-area-inset-left, 0px));
+      padding-right: calc(12px + env(safe-area-inset-right, 0px));
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -178,6 +180,7 @@
     .viewer-area.pen-active #drawCanvas {
       pointer-events: auto;
       cursor: crosshair;
+      touch-action: none;
     }
 
     /* サムネイル一覧 */
@@ -199,7 +202,8 @@
       }
       .sidebar {
         width: 100%;
-        height: 80px;
+        height: calc(80px + env(safe-area-inset-bottom, 0px));
+        padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
         flex-direction: row;
         overflow-x: auto;
         overflow-y: hidden;
@@ -314,14 +318,25 @@
   </div>
 
   <script>
-    let imageList = []; 
-    let currentIndex = -1;
+    // 保存・共有する画像の形式（写真はJPEGのほうが軽くメールに添付しやすい。PNGに戻す場合は下の3行を変更）
+    const EXPORT_MIME = 'image/jpeg';
+    const EXPORT_EXT = 'jpg';
+    const EXPORT_QUALITY = 0.92;
 
-    let currentImg = new Image();
+    let imageList = [];      // { id, seq, name, blob, url, strokes }
+    let currentIndex = -1;
+    let currentImg = null;   // 読み込み完了した表示中の画像（未完了の間は null）
+    let loadToken = 0;       // 画像の読み込み競合を防ぐための番号
+    let seqCounter = 0;      // 追加順を保つための連番
+
     let currentColor = '#ff3b30';
-    let currentLineWidth = 8;
-    let isDrawing = false;
+    let currentLineWidth = 8; // 画面上の太さ(px)。実際の保存時に画像サイズへ換算する
     let isPenMode = false;
+
+    // 描画中の状態
+    let activePointerId = null;
+    let currentStroke = null;
+    let drawingItem = null;
 
     const fileInput = document.getElementById('fileInput');
     const thumbnailList = document.getElementById('thumbnailList');
@@ -346,38 +361,49 @@
     const clearBtn = document.getElementById('clearBtn');
     const lineWidthInput = document.getElementById('lineWidth');
 
-    // IndexedDB の初期化と管理
+    // ---------- IndexedDB ----------
     const DB_NAME = 'PhotoMemoDB';
     const DB_VERSION = 1;
     const STORE_NAME = 'photos';
 
+    // 接続は1回だけ開いて使い回す
+    let dbPromise = null;
     function openDB() {
-      return new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, DB_VERSION);
-        request.onupgradeneeded = (e) => {
-          const db = e.target.result;
-          if (!db.objectStoreNames.contains(STORE_NAME)) {
-            db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-          }
-        };
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
+      if (!dbPromise) {
+        dbPromise = new Promise((resolve, reject) => {
+          const request = indexedDB.open(DB_NAME, DB_VERSION);
+          request.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+              db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+            }
+          };
+          request.onsuccess = () => {
+            const db = request.result;
+            db.onversionchange = () => { db.close(); dbPromise = null; };
+            resolve(db);
+          };
+          request.onerror = () => reject(request.error);
+        });
+        dbPromise.catch(() => { dbPromise = null; });
+      }
+      return dbPromise;
     }
 
     async function saveImageToDB(item) {
       const db = await openDB();
       return new Promise((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        store.put({
+        tx.objectStore(STORE_NAME).put({
           id: item.id,
+          seq: item.seq,
           name: item.name,
           blob: item.blob,
           strokes: item.strokes || []
         });
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
       });
     }
 
@@ -385,10 +411,10 @@
       const db = await openDB();
       return new Promise((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        store.delete(id);
+        tx.objectStore(STORE_NAME).delete(id);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
       });
     }
 
@@ -396,10 +422,10 @@
       const db = await openDB();
       return new Promise((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        store.clear();
+        tx.objectStore(STORE_NAME).clear();
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
       });
     }
 
@@ -407,24 +433,41 @@
       const db = await openDB();
       return new Promise((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const request = store.getAll();
+        const request = tx.objectStore(STORE_NAME).getAll();
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
       });
+    }
+
+    // 保存失敗は、続けて何度も通知しない
+    let dbErrorNotified = false;
+    async function persist(item) {
+      try {
+        await saveImageToDB(item);
+      } catch (err) {
+        console.error('保存失敗:', err);
+        if (!dbErrorNotified) {
+          dbErrorNotified = true;
+          alert('端末内への保存に失敗しました。空き容量やブラウザの設定（プライベートブラウズなど）をご確認ください。');
+        }
+      }
     }
 
     window.addEventListener('DOMContentLoaded', async () => {
       try {
         const storedItems = await loadAllFromDB();
         if (storedItems && storedItems.length > 0) {
+          // 追加した順に並べる（旧データは seq が無いのでIDの順）
+          storedItems.sort((a, b) => ((a.seq || 0) - (b.seq || 0)) || String(a.id).localeCompare(String(b.id)));
           imageList = storedItems.map(item => ({
             id: item.id,
+            seq: item.seq || 0,
             name: item.name,
             blob: item.blob,
             url: URL.createObjectURL(item.blob),
             strokes: item.strokes || []
           }));
+          seqCounter = Math.max(0, ...imageList.map(i => i.seq || 0));
           renderThumbnails();
           loadImage(0);
         }
@@ -433,8 +476,8 @@
       }
     });
 
-    modeBtn.addEventListener('click', (e) => {
-      e.preventDefault();
+    // ---------- モード切替 ----------
+    modeBtn.addEventListener('click', () => {
       if (currentIndex === -1) return;
       isPenMode = !isPenMode;
 
@@ -453,27 +496,40 @@
       }
     });
 
+    // ---------- 写真の追加 ----------
     fileInput.addEventListener('change', async (e) => {
       const files = Array.from(e.target.files);
       if (files.length === 0) return;
 
       const startIndex = imageList.length;
+      let failed = 0;
 
       for (const file of files) {
+        seqCounter = Math.max(seqCounter, Date.now());
         const item = {
-          id: Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+          id: Date.now() + '_' + Math.random().toString(36).slice(2, 11),
+          seq: ++seqCounter,
           name: file.name,
           blob: file,
           url: URL.createObjectURL(file),
           strokes: []
         };
         imageList.push(item);
-        await saveImageToDB(item);
+        try {
+          await saveImageToDB(item);
+        } catch (err) {
+          console.error('保存失敗:', err);
+          failed++;
+        }
       }
 
-      renderThumbnails();
-      loadImage(startIndex);
       fileInput.value = '';
+      renderThumbnails();
+      if (imageList.length > startIndex) loadImage(startIndex);
+
+      if (failed > 0) {
+        alert(`${failed}枚の写真を端末内に保存できませんでした（このまま使えますが、閉じると消えます）。空き容量などをご確認ください。`);
+      }
     });
 
     function renderThumbnails() {
@@ -483,8 +539,10 @@
         div.className = `thumb-item ${index === currentIndex ? 'active' : ''}`;
         const img = document.createElement('img');
         img.src = item.url;
+        img.alt = item.name;
+        img.decoding = 'async';
         div.appendChild(img);
-        
+
         div.addEventListener('click', (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
@@ -494,305 +552,370 @@
       });
     }
 
+    // ---------- 画像の表示 ----------
     function loadImage(index) {
+      const token = ++loadToken;
+      currentImg = null;
+
       if (index < 0 || index >= imageList.length) {
         currentIndex = -1;
         emptyState.style.display = 'block';
         canvasContainer.style.display = 'none';
-        updateNavButtons();
+        updateButtons();
         return;
       }
 
       currentIndex = index;
-
       Array.from(thumbnailList.children).forEach((el, i) => {
         el.classList.toggle('active', i === index);
       });
+      updateButtons();
 
-      currentImg = new Image();
-      currentImg.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        if (token !== loadToken) return; // 後から別の画像が選ばれていたら無視
+        currentImg = img;
         emptyState.style.display = 'none';
         canvasContainer.style.display = 'block';
 
-        fitCanvasToViewer();
-        redrawAll();
-        updateNavButtons();
+        const w = img.naturalWidth || img.width;
+        const h = img.naturalHeight || img.height;
+        bgCanvas.width = w;
+        bgCanvas.height = h;
+        drawCanvas.width = w;
+        drawCanvas.height = h;
+
+        updateDisplaySize();
+        bgCtx.drawImage(img, 0, 0, w, h); // 背景は読み込み時に1回だけ描画する
+        redrawStrokes();
+        updateButtons();
       };
-      currentImg.src = imageList[index].url;
+      img.onerror = () => {
+        if (token !== loadToken) return;
+        alert('画像を読み込めませんでした。');
+      };
+      img.src = imageList[index].url;
     }
 
-    function fitCanvasToViewer() {
-      if (currentIndex === -1) return;
+    // 画面に合わせた表示サイズだけを変更する（描画内容は消えない）
+    function updateDisplaySize() {
+      if (!currentImg) return;
       const margin = 10;
       const maxWidth = viewerArea.clientWidth - margin;
       const maxHeight = viewerArea.clientHeight - margin;
+      const w = bgCanvas.width;
+      const h = bgCanvas.height;
 
-      bgCanvas.width = currentImg.width;
-      bgCanvas.height = currentImg.height;
-      drawCanvas.width = currentImg.width;
-      drawCanvas.height = currentImg.height;
-
-      const scale = Math.min(maxWidth / currentImg.width, maxHeight / currentImg.height, 1);
-      const displayWidth = Math.round(currentImg.width * scale);
-      const displayHeight = Math.round(currentImg.height * scale);
-
-      canvasContainer.style.width = displayWidth + 'px';
-      canvasContainer.style.height = displayHeight + 'px';
+      const scale = Math.min(maxWidth / w, maxHeight / h, 1);
+      canvasContainer.style.width = Math.round(w * scale) + 'px';
+      canvasContainer.style.height = Math.round(h * scale) + 'px';
     }
 
-    function redrawAll() {
-      if (currentIndex === -1) return;
+    // ---------- 描画 ----------
+    // 1本の線（点が1つだけならドットとして描く）
+    function drawStroke(ctx, stroke) {
+      const pts = stroke.points;
+      if (!pts || pts.length === 0) return;
 
-      bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
-      bgCtx.drawImage(currentImg, 0, 0, bgCanvas.width, bgCanvas.height);
+      ctx.strokeStyle = stroke.color;
+      ctx.fillStyle = stroke.color;
+      ctx.lineWidth = stroke.width;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
 
+      if (pts.length === 1) {
+        ctx.beginPath();
+        ctx.arc(pts[0].x, pts[0].y, stroke.width / 2, 0, Math.PI * 2);
+        ctx.fill();
+        return;
+      }
+
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) {
+        ctx.lineTo(pts[i].x, pts[i].y);
+      }
+      ctx.stroke();
+    }
+
+    function redrawStrokes() {
       drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+      if (currentIndex === -1) return;
+      (imageList[currentIndex].strokes || []).forEach(stroke => drawStroke(drawCtx, stroke));
+    }
+
+    // 描画中は新しく増えた区間だけを描く（全体を描き直さない）
+    function drawSegment(stroke, from, to) {
+      drawCtx.strokeStyle = stroke.color;
+      drawCtx.lineWidth = stroke.width;
       drawCtx.lineCap = 'round';
       drawCtx.lineJoin = 'round';
-
-      const currentStrokes = imageList[currentIndex].strokes || [];
-      currentStrokes.forEach(stroke => {
-        if (stroke.points.length < 2) return;
-        drawCtx.beginPath();
-        drawCtx.strokeStyle = stroke.color;
-        drawCtx.lineWidth = stroke.width;
-        drawCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
-        for (let i = 1; i < stroke.points.length; i++) {
-          drawCtx.lineTo(stroke.points[i].x, stroke.points[i].y);
-        }
-        drawCtx.stroke();
-      });
+      drawCtx.beginPath();
+      drawCtx.moveTo(from.x, from.y);
+      drawCtx.lineTo(to.x, to.y);
+      drawCtx.stroke();
     }
 
     function getPos(e) {
       const rect = drawCanvas.getBoundingClientRect();
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-
-      const scaleX = drawCanvas.width / rect.width;
-      const scaleY = drawCanvas.height / rect.height;
-
       return {
-        x: (clientX - rect.left) * scaleX,
-        y: (clientY - rect.top) * scaleY
+        x: (e.clientX - rect.left) * (drawCanvas.width / rect.width),
+        y: (e.clientY - rect.top) * (drawCanvas.height / rect.height)
       };
     }
 
-    function startDrawing(e) {
-      if (!isPenMode || currentIndex === -1) return;
-      isDrawing = true;
-      const pos = getPos(e);
-      const currentStroke = {
-        color: currentColor,
-        width: currentLineWidth,
-        points: [pos]
-      };
-      imageList[currentIndex].strokes.push(currentStroke);
+    // 画面上の太さ(px)を画像上の太さに換算（高解像度の写真でも線が細くならない）
+    function strokeWidthInImagePx() {
+      const rect = drawCanvas.getBoundingClientRect();
+      const scale = rect.width > 0 ? drawCanvas.width / rect.width : 1;
+      return Math.max(1, Math.round(currentLineWidth * scale * 10) / 10);
     }
 
-    function draw(e) {
-      if (!isPenMode || !isDrawing || currentIndex === -1) return;
+    drawCanvas.addEventListener('pointerdown', (e) => {
+      if (!isPenMode || !currentImg || currentIndex === -1) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      if (activePointerId !== null) return; // 2本目の指は無視
       e.preventDefault();
-      const pos = getPos(e);
-      const strokes = imageList[currentIndex].strokes;
-      strokes[strokes.length - 1].points.push(pos);
-      redrawAll();
-    }
 
-    async function stopDrawing() {
-      if (!isPenMode || !isDrawing) return;
-      isDrawing = false;
-      if (currentIndex !== -1) {
-        await saveImageToDB(imageList[currentIndex]);
+      activePointerId = e.pointerId;
+      drawCanvas.setPointerCapture(e.pointerId);
+
+      drawingItem = imageList[currentIndex];
+      currentStroke = {
+        color: currentColor,
+        width: strokeWidthInImagePx(),
+        points: [getPos(e)]
+      };
+      drawingItem.strokes.push(currentStroke);
+      drawStroke(drawCtx, currentStroke);
+      updateButtons();
+    });
+
+    drawCanvas.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== activePointerId || !currentStroke) return;
+      e.preventDefault();
+
+      const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+      const events = coalesced.length > 0 ? coalesced : [e];
+      for (const ev of events) {
+        const pos = getPos(ev);
+        const prev = currentStroke.points[currentStroke.points.length - 1];
+        currentStroke.points.push(pos);
+        drawSegment(currentStroke, prev, pos);
       }
+    });
+
+    async function endStroke(e) {
+      if (e.pointerId !== activePointerId) return;
+      activePointerId = null;
+      const item = drawingItem;
+      currentStroke = null;
+      drawingItem = null;
+      if (item) await persist(item);
     }
 
-    drawCanvas.addEventListener('mousedown', startDrawing);
-    drawCanvas.addEventListener('mousemove', draw);
-    window.addEventListener('mouseup', stopDrawing);
-
-    drawCanvas.addEventListener('touchstart', startDrawing, { passive: false });
-    drawCanvas.addEventListener('touchmove', draw, { passive: false });
-    window.addEventListener('touchend', stopDrawing);
-    window.addEventListener('touchcancel', stopDrawing);
+    drawCanvas.addEventListener('pointerup', endStroke);
+    drawCanvas.addEventListener('pointercancel', endStroke);
 
     document.querySelectorAll('.color-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active'));
-        e.target.classList.add('active');
-        currentColor = e.target.getAttribute('data-color');
+        e.currentTarget.classList.add('active');
+        currentColor = e.currentTarget.getAttribute('data-color');
       });
     });
 
     lineWidthInput.addEventListener('input', (e) => {
-      currentLineWidth = e.target.value;
+      currentLineWidth = Number(e.target.value);
     });
 
-    undoBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
+    undoBtn.addEventListener('click', async () => {
       if (currentIndex === -1) return;
-      imageList[currentIndex].strokes.pop();
-      redrawAll();
-      await saveImageToDB(imageList[currentIndex]);
+      const item = imageList[currentIndex];
+      if (item.strokes.length === 0) return;
+      item.strokes.pop();
+      redrawStrokes();
+      updateButtons();
+      await persist(item);
     });
 
-    clearBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
+    clearBtn.addEventListener('click', async () => {
       if (currentIndex === -1) return;
-      imageList[currentIndex].strokes = [];
-      redrawAll();
-      await saveImageToDB(imageList[currentIndex]);
+      const item = imageList[currentIndex];
+      if (item.strokes.length === 0) return;
+      if (!confirm('この写真の書き込みをすべて消しますか？')) return;
+      item.strokes = [];
+      redrawStrokes();
+      updateButtons();
+      await persist(item);
     });
 
-    deleteBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
+    // ---------- 削除 ----------
+    deleteBtn.addEventListener('click', async () => {
       if (currentIndex === -1) return;
+      if (!confirm('表示中の写真メモを削除しますか？')) return;
 
-      if (confirm('表示中の写真メモを削除しますか？')) {
-        const itemToDelete = imageList[currentIndex];
+      const itemToDelete = imageList[currentIndex];
+      try {
         await deleteImageFromDB(itemToDelete.id);
-        URL.revokeObjectURL(itemToDelete.url);
-
-        imageList.splice(currentIndex, 1);
-        renderThumbnails();
-
-        if (imageList.length === 0) {
-          loadImage(-1);
-        } else {
-          const nextIndex = currentIndex >= imageList.length ? imageList.length - 1 : currentIndex;
-          loadImage(nextIndex);
-        }
+      } catch (err) {
+        console.error('削除失敗:', err);
+        alert('削除に失敗しました。');
+        return;
       }
-    });
+      URL.revokeObjectURL(itemToDelete.url);
 
-    clearAllBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      if (imageList.length === 0) return;
+      const removedIndex = imageList.indexOf(itemToDelete);
+      imageList.splice(removedIndex, 1);
+      renderThumbnails();
 
-      if (confirm('すべての写真メモを完全に削除しますか？')) {
-        await clearAllFromDB();
-        imageList.forEach(item => URL.revokeObjectURL(item.url));
-        imageList = [];
-        renderThumbnails();
+      if (imageList.length === 0) {
         loadImage(-1);
+      } else {
+        loadImage(Math.min(removedIndex, imageList.length - 1));
       }
     });
 
-    prevBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      loadImage(currentIndex - 1);
+    clearAllBtn.addEventListener('click', async () => {
+      if (imageList.length === 0) return;
+      if (!confirm('すべての写真メモを完全に削除しますか？')) return;
+
+      try {
+        await clearAllFromDB();
+      } catch (err) {
+        console.error('全削除失敗:', err);
+        alert('削除に失敗しました。');
+        return;
+      }
+      imageList.forEach(item => URL.revokeObjectURL(item.url));
+      imageList = [];
+      renderThumbnails();
+      loadImage(-1);
     });
 
-    nextBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      loadImage(currentIndex + 1);
-    });
+    prevBtn.addEventListener('click', () => loadImage(currentIndex - 1));
+    nextBtn.addEventListener('click', () => loadImage(currentIndex + 1));
 
-    function updateNavButtons() {
-      const hasImage = currentIndex !== -1;
-      prevBtn.disabled = !hasImage || currentIndex <= 0;
-      nextBtn.disabled = !hasImage || currentIndex >= imageList.length - 1;
-      saveBtn.disabled = !hasImage;
-      copyBtn.disabled = !hasImage;
-      shareBtn.disabled = !hasImage;
-      deleteBtn.disabled = !hasImage;
-      undoBtn.disabled = !hasImage;
-      clearBtn.disabled = !hasImage;
+    function updateButtons() {
+      const hasItem = currentIndex !== -1;
+      const ready = hasItem && !!currentImg; // 画像の読み込みが終わっているか
+      const strokeCount = hasItem ? imageList[currentIndex].strokes.length : 0;
+
+      prevBtn.disabled = !hasItem || currentIndex <= 0;
+      nextBtn.disabled = !hasItem || currentIndex >= imageList.length - 1;
+      saveBtn.disabled = !ready;
+      copyBtn.disabled = !ready;
+      shareBtn.disabled = !ready;
+      deleteBtn.disabled = !hasItem;
+      undoBtn.disabled = strokeCount === 0;
+      clearBtn.disabled = strokeCount === 0;
     }
 
-    // 合成画像を作成する共通関数
+    // ---------- 書き出し（保存・コピー・共有） ----------
     function generateExportCanvas() {
       const exportCanvas = document.createElement('canvas');
-      exportCanvas.width = currentImg.width;
-      exportCanvas.height = currentImg.height;
+      exportCanvas.width = bgCanvas.width;
+      exportCanvas.height = bgCanvas.height;
       const expCtx = exportCanvas.getContext('2d');
 
-      expCtx.drawImage(currentImg, 0, 0);
-      expCtx.lineCap = 'round';
-      expCtx.lineJoin = 'round';
-
-      const currentStrokes = imageList[currentIndex].strokes || [];
-      currentStrokes.forEach(stroke => {
-        if (stroke.points.length < 2) return;
-        expCtx.beginPath();
-        expCtx.strokeStyle = stroke.color;
-        expCtx.lineWidth = stroke.width;
-        expCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
-        for (let i = 1; i < stroke.points.length; i++) {
-          expCtx.lineTo(stroke.points[i].x, stroke.points[i].y);
-        }
-        expCtx.stroke();
-      });
+      expCtx.drawImage(currentImg, 0, 0, exportCanvas.width, exportCanvas.height);
+      (imageList[currentIndex].strokes || []).forEach(stroke => drawStroke(expCtx, stroke));
       return exportCanvas;
     }
 
-    // 💾 保存（ダウンロード）
-    saveBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      if (currentIndex === -1) return;
+    function canvasToBlob(canvas, mime, quality) {
+      return new Promise((resolve, reject) => {
+        canvas.toBlob(blob => {
+          if (blob) resolve(blob);
+          else reject(new Error('画像の生成に失敗しました。'));
+        }, mime, quality);
+      });
+    }
 
-      const exportCanvas = generateExportCanvas();
-      const link = document.createElement('a');
+    function exportFileName() {
       const originalName = imageList[currentIndex].name.replace(/\.[^/.]+$/, "");
-      link.download = `${originalName}_memo.png`;
-      link.href = exportCanvas.toDataURL('image/png');
-      link.click();
+      return `${originalName}_memo.${EXPORT_EXT}`;
+    }
+
+    // 💾 保存（ダウンロード）
+    saveBtn.addEventListener('click', async () => {
+      if (currentIndex === -1 || !currentImg) return;
+      const fileName = exportFileName();
+      saveBtn.disabled = true;
+      try {
+        const blob = await canvasToBlob(generateExportCanvas(), EXPORT_MIME, EXPORT_QUALITY);
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.download = fileName;
+        link.href = url;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      } catch (err) {
+        console.error('保存失敗:', err);
+        alert('画像の保存に失敗しました。');
+      } finally {
+        updateButtons();
+      }
     });
 
-    // 📋 クリップボードにコピー
-    copyBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      if (currentIndex === -1) return;
-
-      const exportCanvas = generateExportCanvas();
-      exportCanvas.toBlob(async (blob) => {
-        try {
-          await navigator.clipboard.write([
-            new ClipboardItem({ 'image/png': blob })
-          ]);
-          alert('画像をクリップボードにコピーしました！メールなどにそのまま貼り付け（Ctrl+V等）できます。');
-        } catch (err) {
-          console.error('コピー失敗:', err);
-          alert('お使いの環境またはブラウザではクリップボードへの画像コピーがサポートされていません。');
-        }
-      }, 'image/png');
+    // 📋 クリップボードにコピー（クリップボードはPNG形式）
+    copyBtn.addEventListener('click', async () => {
+      if (currentIndex === -1 || !currentImg) return;
+      if (!navigator.clipboard || typeof ClipboardItem === 'undefined') {
+        alert('お使いの環境またはブラウザではクリップボードへの画像コピーがサポートされていません。');
+        return;
+      }
+      try {
+        // Safariは「ボタンを押した直後」に書き込みを始める必要があるため、画像生成のPromiseをそのまま渡す
+        const blobPromise = canvasToBlob(generateExportCanvas(), 'image/png');
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blobPromise })]);
+        alert('画像をクリップボードにコピーしました！メールなどにそのまま貼り付けできます。');
+      } catch (err) {
+        console.error('コピー失敗:', err);
+        alert('画像のコピーに失敗しました。お使いの環境では未対応の可能性があります。');
+      }
     });
 
     // 📤 共有 (Web Share API)
-    shareBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      if (currentIndex === -1) return;
-
-      const exportCanvas = generateExportCanvas();
-      exportCanvas.toBlob(async (blob) => {
-        const originalName = imageList[currentIndex].name.replace(/\.[^/.]+$/, "");
-        const file = new File([blob], `${originalName}_memo.png`, { type: 'image/png' });
+    shareBtn.addEventListener('click', async () => {
+      if (currentIndex === -1 || !currentImg) return;
+      const fileName = exportFileName();
+      shareBtn.disabled = true;
+      try {
+        const blob = await canvasToBlob(generateExportCanvas(), EXPORT_MIME, EXPORT_QUALITY);
+        const file = new File([blob], fileName, { type: EXPORT_MIME });
 
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
-          try {
-            await navigator.share({
-              files: [file],
-              title: '写真メモ',
-              text: '写真メモを共有します'
-            });
-          } catch (err) {
-            if (err.name !== 'AbortError') {
-              console.error('共有エラー:', err);
-            }
-          }
+          await navigator.share({
+            files: [file],
+            title: '写真メモ',
+            text: '写真メモを共有します'
+          });
         } else {
           alert('お使いの環境では直接共有機能がサポートされていません。「保存」ボタンからファイルをダウンロードして添付してください。');
         }
-      }, 'image/png');
+      } catch (err) {
+        if (err.name === 'NotAllowedError') {
+          alert('共有を開始できませんでした。もう一度「共有」を押してください。');
+        } else if (err.name !== 'AbortError') {
+          console.error('共有エラー:', err);
+          alert('共有に失敗しました。');
+        }
+      } finally {
+        updateButtons();
+      }
     });
 
+    // 画面サイズが変わっても描画内容は保持し、表示サイズだけを更新する
+    let resizeFrame = null;
     window.addEventListener('resize', () => {
-      if (currentIndex !== -1) {
-        fitCanvasToViewer();
-        redrawAll();
-      }
+      if (resizeFrame) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = null;
+        updateDisplaySize();
+      });
     });
   </script>
 </body>
