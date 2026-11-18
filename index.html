@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="写真メモ">
-  <title>写真メモビューワー</title>
+  <title>写真メモ</title>
   <style>
     :root {
       --bg-color: #1e1e24;
@@ -258,6 +258,111 @@
       margin-top: 8px;
       font-size: 14px;
     }
+
+    /* ===== カメラ撮影画面 ===== */
+    .cam-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(10, 10, 14, 0.98);
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding:
+        max(env(safe-area-inset-top, 0px), 10px)
+        max(env(safe-area-inset-right, 0px), 12px)
+        max(env(safe-area-inset-bottom, 0px), 10px)
+        max(env(safe-area-inset-left, 0px), 12px);
+    }
+
+    .cam-modal.on {
+      display: flex;
+    }
+
+    .cam-video-wrap {
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      background: #000;
+      border-radius: 8px;
+    }
+
+    #camVideo {
+      max-width: 100%;
+      max-height: 100%;
+      display: block;
+      object-fit: contain;
+    }
+
+    .cam-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+    }
+
+    .cam-bar select {
+      max-width: 60vw;
+      min-width: 140px;
+      padding: 6px 8px;
+      font-size: 14px;
+      border-radius: 6px;
+      border: 1px solid #55556a;
+      background: #3b3b4f;
+      color: var(--text-color);
+    }
+
+    .cam-shutter {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      border: 4px solid #fff;
+      background: #e63946;
+      cursor: pointer;
+    }
+
+    .cam-shutter:active {
+      background: #b32d38;
+    }
+
+    .cam-shutter:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .cam-info {
+      font-size: 12px;
+      color: #aaa;
+      text-align: center;
+    }
+
+    .toast {
+      position: fixed;
+      top: calc(env(safe-area-inset-top, 0px) + 10px);
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: 90vw;
+      padding: 8px 14px;
+      border-radius: 18px;
+      background: rgba(0, 0, 0, 0.85);
+      color: #fff;
+      font-size: 13px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+      z-index: 200;
+    }
+
+    .toast.on {
+      opacity: 1;
+    }
   </style>
 </head>
 <body>
@@ -269,6 +374,7 @@
         📷 写真を開く
         <input type="file" id="fileInput" accept="image/*" multiple>
       </label>
+      <button class="btn btn-success" id="cameraBtn" type="button" title="カメラを選んで撮影">📸 カメラ</button>
       <button class="btn" id="prevBtn" type="button" disabled>前へ</button>
       <button class="btn" id="nextBtn" type="button" disabled>次へ</button>
     </div>
@@ -309,7 +415,7 @@
           <circle cx="8.5" cy="8.5" r="1.5"></circle>
           <polyline points="21 15 16 10 5 21"></polyline>
         </svg>
-        <p>「写真を開く」から画像を選択してください</p>
+        <p>「写真を開く」または「カメラ」から写真を追加してください</p>
       </div>
 
       <div class="canvas-container" id="canvasContainer" style="display:none;">
@@ -318,6 +424,24 @@
       </div>
     </div>
   </div>
+
+  <!-- カメラ撮影画面 -->
+  <div class="cam-modal" id="camModal">
+    <div class="cam-video-wrap">
+      <video id="camVideo" autoplay playsinline muted></video>
+    </div>
+    <div class="cam-bar">
+      <select id="camSelect" title="使用するカメラ"></select>
+      <button class="btn" id="camSwitchBtn" type="button">🔄 切替</button>
+    </div>
+    <div class="cam-bar">
+      <button class="btn" id="camCloseBtn" type="button">✖ 閉じる</button>
+      <button class="cam-shutter" id="camShutterBtn" type="button" title="撮影"></button>
+      <div class="cam-info" id="camInfo">撮影: 0枚</div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
 
   <script>
     // 保存・共有する画像の形式（写真はJPEGのほうが軽くメールに添付しやすい。PNGに戻す場合は下の3行を変更）
@@ -362,6 +486,24 @@
     const undoBtn = document.getElementById('undoBtn');
     const clearBtn = document.getElementById('clearBtn');
     const lineWidthInput = document.getElementById('lineWidth');
+
+    const cameraBtn = document.getElementById('cameraBtn');
+    const camModal = document.getElementById('camModal');
+    const camVideo = document.getElementById('camVideo');
+    const camSelect = document.getElementById('camSelect');
+    const camSwitchBtn = document.getElementById('camSwitchBtn');
+    const camCloseBtn = document.getElementById('camCloseBtn');
+    const camShutterBtn = document.getElementById('camShutterBtn');
+    const camInfo = document.getElementById('camInfo');
+    const toast = document.getElementById('toast');
+
+    let toastTimer = null;
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.classList.add('on');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('on'), 2200);
+    }
 
     // ---------- IndexedDB ----------
     const DB_NAME = 'PhotoMemoDB';
@@ -499,6 +641,28 @@
     });
 
     // ---------- 写真の追加 ----------
+    // 1枚を一覧に追加して端末内に保存する（ファイル選択・カメラ撮影の共通処理）
+    // 戻り値: 端末内への保存に成功したか
+    async function addPhotoItem(blob, name) {
+      seqCounter = Math.max(seqCounter, Date.now());
+      const item = {
+        id: Date.now() + '_' + Math.random().toString(36).slice(2, 11),
+        seq: ++seqCounter,
+        name: name,
+        blob: blob,
+        url: URL.createObjectURL(blob),
+        strokes: []
+      };
+      imageList.push(item);
+      try {
+        await saveImageToDB(item);
+        return true;
+      } catch (err) {
+        console.error('保存失敗:', err);
+        return false;
+      }
+    }
+
     fileInput.addEventListener('change', async (e) => {
       const files = Array.from(e.target.files);
       if (files.length === 0) return;
@@ -507,22 +671,8 @@
       let failed = 0;
 
       for (const file of files) {
-        seqCounter = Math.max(seqCounter, Date.now());
-        const item = {
-          id: Date.now() + '_' + Math.random().toString(36).slice(2, 11),
-          seq: ++seqCounter,
-          name: file.name,
-          blob: file,
-          url: URL.createObjectURL(file),
-          strokes: []
-        };
-        imageList.push(item);
-        try {
-          await saveImageToDB(item);
-        } catch (err) {
-          console.error('保存失敗:', err);
-          failed++;
-        }
+        const ok = await addPhotoItem(file, file.name);
+        if (!ok) failed++;
       }
 
       fileInput.value = '';
@@ -553,6 +703,213 @@
         thumbnailList.appendChild(div);
       });
     }
+
+    // ---------- カメラ撮影 ----------
+    // PCのカメラ（Surfaceなど）でも、使うカメラを選んで撮影できる
+    const BACK_RE = /back|rear|environment|背面|外|リア/i;
+    const FRONT_RE = /front|user|face|前面|内|フロント/i;
+
+    let camStream = null;
+    let camDeviceId = null;
+    let camBusy = false;
+    let camShotCount = 0;
+    let camFirstNewIndex = -1;   // このセッションで最初に撮影した写真の位置
+    let camFailed = 0;
+
+    function stopCamStream() {
+      if (camStream) {
+        camStream.getTracks().forEach(t => t.stop());
+        camStream = null;
+      }
+      camVideo.srcObject = null;
+    }
+
+    // deviceId指定（なければ外カメラ希望）でカメラを開く
+    async function openCamStream(deviceId) {
+      const base = { width: { ideal: 3840 }, height: { ideal: 2160 } };
+      if (deviceId) {
+        return navigator.mediaDevices.getUserMedia({
+          video: Object.assign({ deviceId: { exact: deviceId } }, base),
+          audio: false
+        });
+      }
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          video: Object.assign({ facingMode: { ideal: 'environment' } }, base),
+          audio: false
+        });
+      } catch (e) {
+        return await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+    }
+
+    async function startCam(deviceId) {
+      if (camBusy) return;
+      camBusy = true;
+      camShutterBtn.disabled = true;
+      camSwitchBtn.disabled = true;
+      camSelect.disabled = true;
+      try {
+        let s;
+        try {
+          s = await openCamStream(deviceId);
+        } catch (e) {
+          // 指定したカメラが開けなかった場合は、既定のカメラで開き直す
+          if (deviceId) {
+            showToast('そのカメラを開けませんでした。別のカメラで開きます');
+            s = await openCamStream(null);
+          } else {
+            throw e;
+          }
+        }
+        stopCamStream();
+        camStream = s;
+        camVideo.srcObject = camStream;
+        const tr = camStream.getVideoTracks()[0];
+        const st = tr.getSettings ? tr.getSettings() : {};
+        camDeviceId = st.deviceId || deviceId || null;
+
+        // インカメラは鏡のように左右反転して表示（保存する写真は反転しない）
+        const isFront = st.facingMode ? st.facingMode === 'user' : !BACK_RE.test(tr.label);
+        camVideo.style.transform = isFront ? 'scaleX(-1)' : 'none';
+
+        await refreshCamList();
+        try { await camVideo.play(); } catch (e) { /* autoplayで再生される */ }
+      } catch (err) {
+        console.error('カメラ起動失敗:', err);
+        let msg = 'カメラを開けませんでした。';
+        if (err && (err.name === 'NotAllowedError' || err.name === 'SecurityError')) {
+          msg = 'カメラの使用が許可されていません。ブラウザのアドレスバー付近、またはWindowsの「設定 > プライバシーとセキュリティ > カメラ」で許可してください。';
+        } else if (err && err.name === 'NotFoundError') {
+          msg = 'カメラが見つかりませんでした。';
+        } else if (err && err.name === 'NotReadableError') {
+          msg = 'カメラを他のアプリが使用中の可能性があります。他のアプリを閉じてからやり直してください。';
+        }
+        alert(msg);
+        closeCamera();
+      } finally {
+        camBusy = false;
+        camShutterBtn.disabled = !camStream;
+        camSwitchBtn.disabled = false;
+        camSelect.disabled = false;
+      }
+    }
+
+    // 接続されているカメラの一覧を作る（権限を得たあとでないと名前が取れない）
+    async function refreshCamList() {
+      try {
+        const devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+        camSelect.innerHTML = '';
+        devices.forEach((d, i) => {
+          const opt = document.createElement('option');
+          opt.value = d.deviceId;
+          opt.textContent = d.label || `カメラ ${i + 1}`;
+          camSelect.appendChild(opt);
+        });
+        if (camDeviceId && devices.some(d => d.deviceId === camDeviceId)) {
+          camSelect.value = camDeviceId;
+        }
+        camSwitchBtn.style.display = devices.length > 1 ? '' : 'none';
+        camSelect.style.display = devices.length > 1 ? '' : 'none';
+      } catch (e) {
+        console.warn('カメラ一覧の取得に失敗:', e);
+      }
+    }
+
+    function updateCamInfo() {
+      camInfo.textContent = `撮影: ${camShotCount}枚`;
+    }
+
+    async function openCameraModal() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert('このブラウザまたは接続方法ではカメラを使えません。HTTPSで開いているかご確認ください。');
+        return;
+      }
+      camShotCount = 0;
+      camFirstNewIndex = -1;
+      camFailed = 0;
+      updateCamInfo();
+      camModal.classList.add('on');
+      await startCam(null);
+    }
+
+    function closeCamera() {
+      stopCamStream();
+      camModal.classList.remove('on');
+
+      renderThumbnails();
+      if (camFirstNewIndex !== -1 && imageList.length > camFirstNewIndex) {
+        loadImage(imageList.length - 1); // 最後に撮った写真を表示
+      }
+      if (camFailed > 0) {
+        alert(`${camFailed}枚の写真を端末内に保存できませんでした（このまま使えますが、閉じると消えます）。空き容量などをご確認ください。`);
+      }
+      camFirstNewIndex = -1;
+      camFailed = 0;
+    }
+
+    let shooting = false;
+    async function takeCameraPhoto() {
+      if (shooting || !camStream) return;
+      const vw = camVideo.videoWidth;
+      const vh = camVideo.videoHeight;
+      if (!vw || !vh) return;
+
+      shooting = true;
+      camShutterBtn.disabled = true;
+      try {
+        const c = document.createElement('canvas');
+        c.width = vw;
+        c.height = vh;
+        c.getContext('2d').drawImage(camVideo, 0, 0, vw, vh);
+        const blob = await canvasToBlob(c, 'image/jpeg', 0.95);
+
+        const d = new Date();
+        const p = (n) => String(n).padStart(2, '0');
+        const name = `camera_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}_${p(camShotCount + 1)}.jpg`;
+
+        if (camFirstNewIndex === -1) camFirstNewIndex = imageList.length;
+        const ok = await addPhotoItem(blob, name);
+        if (!ok) camFailed++;
+        camShotCount++;
+        updateCamInfo();
+        showToast(`撮影しました（${camShotCount}枚）`);
+      } catch (err) {
+        console.error('撮影失敗:', err);
+        showToast('撮影に失敗しました');
+      } finally {
+        shooting = false;
+        camShutterBtn.disabled = !camStream;
+      }
+    }
+
+    cameraBtn.addEventListener('click', openCameraModal);
+    camCloseBtn.addEventListener('click', closeCamera);
+    camShutterBtn.addEventListener('click', takeCameraPhoto);
+
+    camSelect.addEventListener('change', () => {
+      if (camSelect.value) startCam(camSelect.value);
+    });
+
+    // 🔄 切替：一覧の次のカメラへ（インとアウトの切替）
+    camSwitchBtn.addEventListener('click', () => {
+      const opts = Array.from(camSelect.options);
+      if (opts.length < 2) return;
+      const idx = opts.findIndex(o => o.value === camDeviceId);
+      const next = opts[(idx + 1) % opts.length];
+      startCam(next.value);
+    });
+
+    // ページを離れるときはカメラを止める
+    window.addEventListener('pagehide', stopCamStream);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden' && camModal.classList.contains('on')) {
+        stopCamStream();
+        camShutterBtn.disabled = true;
+      } else if (document.visibilityState === 'visible' && camModal.classList.contains('on') && !camStream) {
+        startCam(camDeviceId);
+      }
+    });
 
     // ---------- 画像の表示 ----------
     function loadImage(index) {
